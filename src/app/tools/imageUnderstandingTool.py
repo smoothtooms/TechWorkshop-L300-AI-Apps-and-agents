@@ -1,7 +1,7 @@
 import base64
 from mimetypes import guess_type
 import os
-from openai import AzureOpenAI
+from openai import OpenAI, AzureOpenAI
 from azure.identity import DefaultAzureCredential, get_bearer_token_provider
 from dotenv import load_dotenv
 load_dotenv()
@@ -11,15 +11,46 @@ api_version = os.environ.get("gpt_api_version")
 azure_endpoint = os.environ.get("gpt_endpoint")
 gpt_deployment = os.environ.get("gpt_deployment")
 
-credential = DefaultAzureCredential()
-token_provider = get_bearer_token_provider(credential, "https://cognitiveservices.azure.com/.default")
 
-az_model_client = AzureOpenAI(
-    azure_deployment=azure_deployment,
-    api_version=api_version,
-    azure_endpoint=azure_endpoint,
-    azure_ad_token_provider=token_provider,
-)
+def _resolve_token_scope(endpoint: str) -> str:
+    """Pick the correct AAD audience based on endpoint family."""
+    if "services.ai.azure.com" in endpoint:
+        return "https://ai.azure.com/.default"
+    return "https://cognitiveservices.azure.com/.default"
+
+
+def _is_foundry_endpoint(endpoint: str) -> bool:
+    return "services.ai.azure.com" in endpoint
+
+
+def _to_foundry_base_url(endpoint: str) -> str:
+    # Accept either the host root or a full /openai/v1 URL from env.
+    if endpoint.endswith("/openai/v1"):
+        return endpoint
+    return endpoint.rstrip("/") + "/openai/v1"
+
+
+if not azure_endpoint:
+    raise ValueError("gpt_endpoint is required")
+if not api_version and not _is_foundry_endpoint(azure_endpoint):
+    raise ValueError("gpt_api_version is required")
+if not azure_deployment:
+    raise ValueError("gpt_deployment is required")
+
+credential = DefaultAzureCredential()
+token_provider = get_bearer_token_provider(credential, _resolve_token_scope(azure_endpoint))
+if _is_foundry_endpoint(azure_endpoint):
+    az_model_client = OpenAI(
+        base_url=_to_foundry_base_url(azure_endpoint),
+        api_key=token_provider,
+    )
+else:
+    az_model_client = AzureOpenAI(
+        azure_deployment=azure_deployment,
+        api_version=api_version,
+        azure_endpoint=azure_endpoint,
+        azure_ad_token_provider=token_provider,
+    )
 
 
 def image_describing_tool(image_input, conversation_history, query = None, mime_type=None):
@@ -124,21 +155,36 @@ def image_describing_tool(image_input, conversation_history, query = None, mime_
             ]
         })
 
-    # Step 3: Model call with error handling
+    # Step 3: Model call with error handling. Prefer max_completion_tokens for
+    # newer models, then fall back to max_tokens for older model families.
+    request_kwargs = {
+        "model": gpt_deployment,
+        "messages": chat_prompt,
+        "temperature": 0.7,
+        "top_p": 0.95,
+        "frequency_penalty": 0,
+        "presence_penalty": 0,
+        "stop": None,
+        "stream": False,
+    }
+
     try:
         completion = az_model_client.chat.completions.create(
-            model=gpt_deployment,
-            messages=chat_prompt,
-            max_tokens=1200,
-            temperature=0.7,
-            top_p=0.95,
-            frequency_penalty=0,
-            presence_penalty=0,
-            stop=None,
-            stream=False
+            max_completion_tokens=1200,
+            **request_kwargs,
         )
     except Exception as e:
-        return f"Error: Model call failed ({str(e)}). Check network connection and credentials."
+        error_text = str(e)
+        if "max_completion_tokens" in error_text and "unsupported" in error_text.lower():
+            try:
+                completion = az_model_client.chat.completions.create(
+                    max_tokens=1200,
+                    **request_kwargs,
+                )
+            except Exception as inner_e:
+                return f"Error: Model call failed ({str(inner_e)}). Check network connection and credentials."
+        else:
+            return f"Error: Model call failed ({str(e)}). Check network connection and credentials."
 
     response_dict = completion.model_dump()
     response_message = response_dict["choices"][0]["message"]["content"]

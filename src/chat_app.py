@@ -42,7 +42,7 @@ from utils.message_utils import (
 # Agent Imports
 from app.tools.understandImage import get_image_description
 from services.agent_service import get_or_create_agent_processor
-# from handlers.single_agent_handler import handle_single_agent
+from handlers.single_agent_handler import handle_single_agent
 # from handlers.multi_agent_handler import (
 #     classify_intent, enrich_context, execute_agent,
 #     handle_image_creation, process_response,
@@ -244,14 +244,14 @@ async def websocket_endpoint(websocket: WebSocket):
             
             chat_history = parse_conversation_history(conversation_history, chat_history, user_message)
             
-            await websocket.send_text(fast_json_dumps({"answer": "This application is not yet ready to serve results. Please check back later.", "agent": None, "cart": persistent_cart}))
+            #await websocket.send_text(fast_json_dumps({"answer": "This application is not yet ready to serve results. Please check back later.", "agent": None, "cart": persistent_cart}))
 
             # =================================================================
             # EXERCISE 02: Single-agent example
             # Uncomment the import at the top of this file and the block below
             # to route all messages through a single Azure OpenAI agent.
             # =================================================================
-            # await handle_single_agent(websocket, user_message, persistent_cart)
+            await handle_single_agent(websocket, user_message, persistent_cart)
 
             # =================================================================
             # EXERCISE 02 (continued): Multi-agent example
